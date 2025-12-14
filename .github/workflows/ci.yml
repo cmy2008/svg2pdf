@@ -35,7 +35,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          path: /home/runner/work/svg2pdf/svg2pdf
+          path: target/debug/svg2pdf
 
   checks:
     name: Check clippy, formatting, and documentation
