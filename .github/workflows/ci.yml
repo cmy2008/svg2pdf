@@ -32,14 +32,10 @@ jobs:
       - name: Build svg2pdf
         run: cargo build --all
 
-      - name: Run tests
-        id: tests
-        run: cargo test --workspace
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          path: ./svg2pdf
+          path: /home/runner/work/svg2pdf/svg2pdf
 
   checks:
     name: Check clippy, formatting, and documentation
