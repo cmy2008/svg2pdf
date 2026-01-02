@@ -1,34 +1,73 @@
-name: CI BUILD
-on: [push, pull_request]
-env:
-  CLICOLOR_FORCE: 1
+name: CI Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # 只在打 tag 时触发 release（推荐）
+  pull_request:  # PR 时只构建，不发布
+
 jobs:
-  ci:
-    name: CI
+  build:
+    name: Build ${{ matrix.rust }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
+    outputs:
+      tag: ${{ steps.set_tag.outputs.tag }}  # 可选，用于传递 tag
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Install rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
 
-    - name: Build svg2pdf
-      run: cargo build
+      - name: Build
+        run: cargo build --all --verbose
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        # 给 artifact 起唯一名字，例如：svg2pdf-ubuntu-stable 或 svg2pdf-windows-nightly.exe
-        name: svg2pdf-${{ matrix.os }}-${{ matrix.rust }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-        # 精确上传二进制文件（推荐），避免上传整个 debug 目录
-        path: |
-          target/debug/svg2pdf
-          target/debug/svg2pdf.exe
-        if-no-files-found: error  # 可选：没找到文件时直接失败
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: svg2pdf-${{ matrix.os }}-${{ matrix.rust }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          path: |
+            target/debug/svg2pdf
+            target/debug/svg2pdf.exe
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    # 只在 push tag 时运行（避免 PR 时误发布）
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract tag name
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/*
