@@ -38,10 +38,10 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Create Release
+    name: Create Release with Zipped Assets
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')  # 只在推送 v* tag 时发布
+    if: startsWith(github.ref, 'refs/tags/v')  # 只在 tag 时运行
 
     steps:
       - name: Checkout code
@@ -56,28 +56,29 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare release assets (直接重命名文件夹为文件名)
+      - name: Zip each artifact separately
         run: |
-          mkdir release-assets
-          for dir in artifacts/*/ ; do
-            # 获取 artifact 的文件夹名，例如 svg2pdf-windows-latest-stable.exe
-            artifact_name=$(basename "$dir")
-            
-            # 直接取文件夹里唯一的文件（* 通配符会匹配 svg2pdf 或 svg2pdf.exe）
-            binary_file="$dir"*
-            
-            # 复制并重命名为 artifact 原名称（保留平台 + 工具链 + 正确后缀）
-            cp "$binary_file" "release-assets/$artifact_name"
+          cd artifacts
+          for dir in */; do
+            # 去掉末尾的 /
+            artifact_name="${dir%/}"
+            # 生成压缩包名：保持原 artifact 名称 + .zip
+            zip_name="${artifact_name}.zip"
+            echo "Compressing $artifact_name into $zip_name"
+            zip -r "../release-assets/$zip_name" "$dir"
           done
-          
-          echo "即将上传的文件："
-          ls -lh release-assets/
+          cd ..
+
+      - name: Create folder for release assets
+        run: mkdir -p release-assets
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Release ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
           generate_release_notes: true
           files: |
-            release-assets/*
+            release-assets/*.zip
