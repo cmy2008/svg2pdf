@@ -3,17 +3,43 @@ name: CI Build and Release
 on:
   push:
     tags:
-      - 'v*'  # 只在打 tag 时触发 release
+      - 'v*'
   pull_request:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # --- Linux ---
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use_cross: false  # 本机编译不需要 cross
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu # ARM64 Linux
+            use_cross: true   # 需要 cross
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-musl # 静态链接 (可选)
+          #   use_cross: true
+
+          # --- Windows ---
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use_cross: false
+          # - os: windows-latest
+          #   target: aarch64-pc-windows-msvc # Windows ARM64 (可选)
+          #   use_cross: false
+
+          # --- macOS ---
+          - os: macos-latest
+            target: x86_64-apple-darwin # Intel Mac
+            use_cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin # Apple Silicon Mac
+            use_cross: false
 
     steps:
       - name: Checkout code
@@ -23,46 +49,75 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          targets: ${{ matrix.target }}
 
-      # 使用 release 模式构建，产物体积更小
+      # 如果需要交叉编译 (Linux ARM 等)，安装 cross 工具
+      - name: Install Cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # 构建步骤：根据是否使用 cross 决定命令
       - name: Build
-        run: cargo build --release --verbose
-
-      # Linux 和 macOS 打包逻辑 (tar.gz)
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
         run: |
-          # 将二进制文件重命名或移动到当前目录以便打包
-          cp target/release/svg2pdf svg2pdf
-          # 打包，文件名携带系统名
-          tar -czvf svg2pdf-${{ matrix.os }}.tar.gz svg2pdf
+          if [ "${{ matrix.use_cross }}" == "true" ]; then
+            cross build --release --target ${{ matrix.target }} --verbose
+          else
+            cargo build --release --target ${{ matrix.target }} --verbose
+          fi
+        shell: bash
 
-      # Windows 打包逻辑 (zip)
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
+      # 准备打包：处理 Windows 的 .exe 后缀和文件路径
+      - name: Prepare Package
+        shell: bash
         run: |
-          # 复制 exe 到当前目录
-          copy target/release/svg2pdf.exe svg2pdf.exe
-          # 使用 PowerShell 压缩
-          Compress-Archive -Path svg2pdf.exe -DestinationPath svg2pdf-${{ matrix.os }}.zip
+          # 定义二进制文件名 (Windows 需要 .exe)
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            BIN_NAME="svg2pdf.exe"
+          else
+            BIN_NAME="svg2pdf"
+          fi
+          
+          # 定义产物源路径 (注意增加了 target 目录)
+          SRC_PATH="target/${{ matrix.target }}/release/$BIN_NAME"
+          
+          # 检查文件是否存在
+          if [ ! -f "$SRC_PATH" ]; then
+            echo "Error: Binary not found at $SRC_PATH"
+            ls -R target/
+            exit 1
+          fi
 
-      # 上传打包好的文件作为 Artifact
+          # 复制并重命名到当前目录，方便压缩
+          cp "$SRC_PATH" "$BIN_NAME"
+          
+          echo "BIN_NAME=$BIN_NAME" >> $GITHUB_ENV
+
+      # 根据系统类型打包 (Windows 用 zip，其他用 tar.gz)
+      - name: Archive
+        shell: bash
+        run: |
+          # 压缩包名称包含 target，例如 svg2pdf-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            ARCHIVE_NAME="svg2pdf-${{ matrix.target }}.zip"
+            7z a "$ARCHIVE_NAME" ${{ env.BIN_NAME }}
+          else
+            ARCHIVE_NAME="svg2pdf-${{ matrix.target }}.tar.gz"
+            tar -czvf "$ARCHIVE_NAME" ${{ env.BIN_NAME }}
+          fi
+          
+          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          # artifact 的名字用于区分不同系统的产物
-          name: asset-${{ matrix.os }}
-          # 上传 zip 或 tar.gz
-          path: |
-            *.zip
-            *.tar.gz
+          name: asset-${{ matrix.target }}
+          path: ${{ env.ARCHIVE_NAME }}
           if-no-files-found: error
 
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    # 只有在该 ref 是 tag 时才运行
     if: startsWith(github.ref, 'refs/tags/v')
     
     steps:
@@ -73,14 +128,10 @@ jobs:
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      # 下载所有构建任务生成的 Artifacts
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          # v4 版本下载后会保留 artifact 名字作为子文件夹，结构如下：
-          # artifacts/asset-windows-latest/svg2pdf-windows-latest.zip
-          # artifacts/asset-ubuntu-latest/svg2pdf-ubuntu-latest.tar.gz
 
       - name: Display structure of downloaded files
         run: ls -R artifacts
@@ -93,7 +144,7 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          # 使用通配符找到所有子文件夹中的压缩包
+          # 递归查找所有 zip 和 tar.gz
           files: |
             artifacts/**/*.zip
             artifacts/**/*.tar.gz
