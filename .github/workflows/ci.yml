@@ -3,19 +3,18 @@ name: CI Build and Release
 on:
   push:
     tags:
-      - 'v*'  # 只在打 tag 时触发 release（推荐）
-  pull_request:  # PR 时只构建，不发布
+      - 'v*'  # 只在打 tag 时触发 release
+  pull_request:
 
 jobs:
   build:
-    name: Build ${{ matrix.rust }} on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
-    outputs:
-      tag: ${{ steps.set_tag.outputs.tag }}  # 可选，用于传递 tag
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,24 +24,47 @@ jobs:
         with:
           toolchain: stable
 
+      # 使用 release 模式构建，产物体积更小
       - name: Build
-        run: cargo build --all --verbose
+        run: cargo build --release --verbose
 
+      # Linux 和 macOS 打包逻辑 (tar.gz)
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          # 将二进制文件重命名或移动到当前目录以便打包
+          cp target/release/svg2pdf svg2pdf
+          # 打包，文件名携带系统名
+          tar -czvf svg2pdf-${{ matrix.os }}.tar.gz svg2pdf
+
+      # Windows 打包逻辑 (zip)
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # 复制 exe 到当前目录
+          copy target/release/svg2pdf.exe svg2pdf.exe
+          # 使用 PowerShell 压缩
+          Compress-Archive -Path svg2pdf.exe -DestinationPath svg2pdf-${{ matrix.os }}.zip
+
+      # 上传打包好的文件作为 Artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: svg2pdf-${{ matrix.os }}-${{ matrix.rust }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          # artifact 的名字用于区分不同系统的产物
+          name: asset-${{ matrix.os }}
+          # 上传 zip 或 tar.gz
           path: |
-            target/debug/svg2pdf
-            target/debug/svg2pdf.exe
+            *.zip
+            *.tar.gz
           if-no-files-found: error
 
   release:
-    name: Create Release with Zipped Assets
+    name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')  # 只在 tag 时运行
-
+    # 只有在该 ref 是 tag 时才运行
+    if: startsWith(github.ref, 'refs/tags/v')
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -51,26 +73,17 @@ jobs:
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      # 下载所有构建任务生成的 Artifacts
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          # v4 版本下载后会保留 artifact 名字作为子文件夹，结构如下：
+          # artifacts/asset-windows-latest/svg2pdf-windows-latest.zip
+          # artifacts/asset-ubuntu-latest/svg2pdf-ubuntu-latest.tar.gz
 
-      - name: Zip each artifact separately
-        run: |
-          cd artifacts
-          for dir in */; do
-            # 去掉末尾的 /
-            artifact_name="${dir%/}"
-            # 生成压缩包名：保持原 artifact 名称 + .zip
-            zip_name="${artifact_name}.zip"
-            echo "Compressing $artifact_name into $zip_name"
-            zip -r "../release-assets/$zip_name" "$dir"
-          done
-          cd ..
-
-      - name: Create folder for release assets
-        run: mkdir -p release-assets
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -80,5 +93,7 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          # 使用通配符找到所有子文件夹中的压缩包
           files: |
-            release-assets/*.zip
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
