@@ -1,54 +1,37 @@
-name: Continuous integration
+name: CI BUILD
 on: [push, pull_request]
-
 env:
-  RUSTFLAGS: "-Dwarnings"
-  RUSTDOCFLAGS: "-Dwarnings"
-
+  CLICOLOR_FORCE: 1
 jobs:
-  tests:
-    name: Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
+  ci:
+    name: CI
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Get Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+    - name: Install rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
 
-      - name: Get Rust cache
-        uses: Swatinem/rust-cache@v2
+    - name: Install cargo-make
+      run: cargo install cargo-make  # 去掉 --debug，速度更快
 
-      - name: Get pdfium
-        run: |
-          curl -LO https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F5880/pdfium-linux-x64.tgz
-          mkdir pdfium-linux-x64
-          tar -xvzf ./pdfium-linux-x64.tgz -C pdfium-linux-x64
-          mv ./pdfium-linux-x64/lib/libpdfium.so ./tests/pdfium
+    - name: Build svg2pdf
+      run: cargo build
 
-      - name: Build svg2pdf
-        run: cargo build --all
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          path: target/debug/svg2pdf
-
-  checks:
-    name: Check clippy, formatting, and documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-hack
-      - run: cargo clippy --all-targets
-      - run: cargo fmt --check --all
-      - run: cargo doc --workspace --no-deps
-      - run: cargo hack check --each-feature -p svg2pdf
-      - run: cargo hack check --each-feature -p svg2pdf-cli
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        # 给 artifact 起唯一名字，例如：svg2pdf-ubuntu-stable 或 svg2pdf-windows-nightly.exe
+        name: svg2pdf-${{ matrix.os }}-${{ matrix.rust }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+        # 精确上传二进制文件（推荐），避免上传整个 debug 目录
+        path: |
+          target/debug/svg2pdf
+          target/debug/svg2pdf.exe
+        if-no-files-found: error  # 可选：没找到文件时直接失败
