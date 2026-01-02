@@ -19,9 +19,6 @@ jobs:
       with:
         toolchain: stable
 
-    - name: Install cargo-make
-      run: cargo install cargo-make  # 去掉 --debug，速度更快
-
     - name: Build svg2pdf
       run: cargo build
 
